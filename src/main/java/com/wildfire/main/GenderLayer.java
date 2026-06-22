@@ -29,18 +29,13 @@ import com.google.common.cache.LoadingCache;
 import com.google.common.cache.RemovalListener;
 
 /**
- * Reworked GenderLayer:
- *  - Respects entity invisibility
- *  - Caches ModelRenderer boxes instead of creating per-frame
- *  - Uses UV layouts coming from configuration (Fabric defaults are preserved in Configuration)
- *  - Centers the breasts and improves sneak/crouch translation so they stay on the torso
+ * GenderLayer: now feeding physics with player-configurable tuning and preserving all features.
  */
 public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
 
     private final RenderPlayer renderPlayer;
     private static final float MAX_PROTRUSION = 1.6f;
 
-    // Physics cache
     private static final LoadingCache<UUID, BreastPhysics[]> PHYSICS_CACHE = CacheBuilder.newBuilder()
             .expireAfterAccess(5, TimeUnit.MINUTES)
             .removalListener((RemovalListener<UUID, BreastPhysics[]>) notification -> {
@@ -55,8 +50,7 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
                 }
             });
 
-    // Cache ModelRenderer instances to avoid allocations each frame.
-    // Keyed by layout.hashCode() and inflate flag (and optional texture size later).
+    // Cache model renderers keyed by UV layout hash + inflate + texture size if needed later
     private final ConcurrentHashMap<Integer, ModelRenderer> boxCache = new ConcurrentHashMap<>();
 
     public GenderLayer(RenderPlayer renderPlayer) {
@@ -79,9 +73,7 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
                               float partialTicks, float ageInTicks, float headYaw, float headPitch, float scale) {
 
         if (player == null) return;
-
-        // Respect invisibility potion effect or setInvisible()
-        if (player.isInvisible()) return;
+        if (player.isInvisible()) return; // Respect invisibility
 
         if (!shouldRenderBreasts(player)) return;
 
@@ -93,38 +85,54 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
 
         if (cfg == null || !cfg.breastsEnabled || cfg.breastSize <= 0) return;
 
-        // Size / scaling
         float sizeFactor = MathHelper.clamp_float(cfg.breastSize / 100.0f, 0.0f, 1.0f);
         float zScale = 0.1f + (0.9f * sizeFactor);
         float torsoPush = (1.0f - sizeFactor) * 1.6f;
 
-        // Separation + offsets (centered by default)
-        // Note: these values are conservative backports of Fabric defaults, tuned to match skin UVs.
-        float separationBase = 0.75F + (cfg.breastsCleavage / 60.0F); // slightly reduced from original to recentre
+        // Use tuned base separation to keep breasts centered for current model/UVs
+        float separationBase = 0.75F + (cfg.breastsCleavage / 60.0F);
         float userXOffset = cfg.breastsOffsetX;
 
-        // Base positions: Y and Z (Z moves the breasts away from the torso)
         float baseY = 3.5F + cfg.breastsOffsetY - (cfg.height / 40.0F);
         float baseZ = cfg.breastsOffsetZ - (cfg.depth / 10.0F) - 1.5F + (MAX_PROTRUSION * sizeFactor) + torsoPush;
 
-        // Physics
         BreastPhysics[] phys = isFake ? null : getPhysicsForPlayer(player);
         float renderScale = 0.0625F;
         ModelBiped model = (ModelBiped) renderPlayer.getMainModel();
 
         GlStateManager.pushMatrix();
         model.bipedBody.postRender(renderScale);
-
-        // Adjust sneaking translation: smaller translate to keep breasts on torso
         if (player.isSneaking()) {
-            // Reduced translation prevents the boxes from sliding down toward the legs
+            // smaller translate so breasts remain on torso and not slide down
             GlStateManager.translate(0.0F, 0.12F, 0.0F);
         }
 
         GlStateManager.enableBlend();
         GlStateManager.enableAlpha();
 
-        // LEFT SIDE RENDERING
+        // Pass user config values into physics update
+        float bounceMultiplier = cfg.bounceMultiplier;
+        float stiffness = cfg.stiffness;
+        float damping = cfg.damping;
+        float intensity = cfg.intensity;
+        float momentum = cfg.momentum / 100.0f; // normalize if stored as percentage
+        boolean armorOverride = cfg.overrideArmorPhysics;
+
+        if (phys != null) {
+            // Update physics per-breast taking uniboob into account
+            if (cfg.breastsUniboob) {
+                phys[0].update(player, WildfireHelper.getArmor((EntityPlayer) player, 2) instanceof IGenderArmor ? (IGenderArmor)WildfireHelper.getArmor((EntityPlayer)player,2) : null,
+                        bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+                phys[1].syncFrom(phys[0]);
+            } else {
+                phys[0].update(player, WildfireHelper.getArmor((EntityPlayer) player, 2) instanceof IGenderArmor ? (IGenderArmor)WildfireHelper.getArmor((EntityPlayer)player,2) : null,
+                        bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+                phys[1].update(player, WildfireHelper.getArmor((EntityPlayer) player, 2) instanceof IGenderArmor ? (IGenderArmor)WildfireHelper.getArmor((EntityPlayer)player,2) : null,
+                        bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+            }
+        }
+
+        // LEFT side
         float lPosX = 0, lPosY = 0, lBounce = 0;
         if (phys != null) {
             lPosX = interp(phys[0].getPrePositionX(), phys[0].getPositionX(), partialTicks);
@@ -133,11 +141,10 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         }
         float leftX = (userXOffset - separationBase) - (lPosX * 0.34f);
         float leftY = baseY + lPosY;
-        float leftZ = baseZ;
-        renderSide(player, entityCfg.getLeftBreastUVLayout(), leftX, leftY, leftZ, lBounce, renderScale, zScale, 0.0F);
-        renderSide(player, entityCfg.getLeftBreastOverlayUVLayout(), leftX, leftY, leftZ, lBounce, renderScale, zScale, 0.25F);
+        renderSide(player, entityCfg.getLeftBreastUVLayout(), leftX, leftY, baseZ, lBounce, renderScale, zScale, 0.0F);
+        renderSide(player, entityCfg.getLeftBreastOverlayUVLayout(), leftX, leftY, baseZ, lBounce, renderScale, zScale, 0.25F);
 
-        // RIGHT SIDE RENDERING
+        // RIGHT side
         float rPosX = 0, rPosY = 0, rBounce = 0;
         if (phys != null) {
             rPosX = interp(phys[1].getPrePositionX(), phys[1].getPositionX(), partialTicks);
@@ -146,9 +153,8 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         }
         float rightX = (userXOffset + separationBase) + (rPosX * 0.34f);
         float rightY = baseY + rPosY;
-        float rightZ = baseZ;
-        renderSide(player, entityCfg.getRightBreastUVLayout(), rightX, rightY, rightZ, rBounce, renderScale, zScale, 0.0F);
-        renderSide(player, entityCfg.getRightBreastOverlayUVLayout(), rightX, rightY, rightZ, rBounce, renderScale, zScale, 0.25F);
+        renderSide(player, entityCfg.getRightBreastUVLayout(), rightX, rightY, baseZ, rBounce, renderScale, zScale, 0.0F);
+        renderSide(player, entityCfg.getRightBreastOverlayUVLayout(), rightX, rightY, baseZ, rBounce, renderScale, zScale, 0.25F);
 
         GlStateManager.disableAlpha();
         GlStateManager.disableBlend();
@@ -164,11 +170,11 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         ModelRenderer box = boxCache.computeIfAbsent(key, k -> {
             try {
                 ModelRenderer r = new ModelRenderer((ModelBiped) renderPlayer.getMainModel(), north.x1(), north.y1());
-                r.setTextureSize(64, 64); // safe default to avoid re-sizing cached models
+                r.setTextureSize(64, 64);
                 r.addBox(-2.0F, -2.5F, -2.0F, 4, 5, 4, inflate);
                 return r;
             } catch (Throwable t) {
-                System.err.println("[WFG] Failed to create cached ModelRenderer for breast box: " + t.getMessage());
+                System.err.println("[WFG] Failed create cached ModelRenderer: " + t.getMessage());
                 return null;
             }
         });
@@ -215,7 +221,5 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
     }
 
     @Override
-    public boolean shouldCombineTextures() {
-        return false;
-    }
+    public boolean shouldCombineTextures() { return false; }
 }
