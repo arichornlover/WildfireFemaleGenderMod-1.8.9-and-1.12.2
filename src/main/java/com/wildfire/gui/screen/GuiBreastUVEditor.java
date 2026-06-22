@@ -33,13 +33,10 @@ public class GuiBreastUVEditor extends GuiScreen {
     private static final ResourceLocation ADD_ICON = new ResourceLocation("wildfire_gender:textures/gui/widgets/add.png");
     private static final ResourceLocation SUB_ICON = new ResourceLocation("wildfire_gender:textures/gui/widgets/subtract.png");
 
-    // Colors
     private static final int COLOR_WHITE = 0xFFFFFFFF;
-    private static final int COLOR_GREY = 0xFF888888;
     private static final int COLOR_YELLOW = 0xFFFFDD55;
     private static final int COLOR_CYAN = 0xFF00FFFF;
     private static final int COLOR_SIDEBAR_BG = 0xCC000000;
-    private static final int HIGHLIGHT_OVERLAY = 0x55FFDD55;
 
     public GuiBreastUVEditor(GuiScreen parent, UUID playerUuid) {
         this.parent = parent;
@@ -50,15 +47,19 @@ public class GuiBreastUVEditor extends GuiScreen {
     public void initGui() {
         this.buttonList.clear();
         this.selectedUVs = UVStorage.getLayout(playerUuid, selectedBreastIndex);
+        if (this.selectedUVs == null) {
+            // instantiate defaults just to avoid crashes in UI
+            this.selectedUVs = new UVLayout();
+        }
 
         uvWindowX = 10;
         uvWindowY = this.height / 2 - TEXTURE_DRAW_SIZE / 2;
+        // QOL: preview near top-torso area so sliders correspond visually to torso region
         previewCenterX = (this.width - SIDEBAR_WIDTH) / 2 + 20;
-        previewCenterY = this.height / 2 + 50;
+        previewCenterY = this.height / 2 - 24; // moved up
 
         int sidebarX = this.width - SIDEBAR_WIDTH;
 
-        // Reset
         this.buttonList.add(new WildfireButton(0, sidebarX + 5, 5, SIDEBAR_WIDTH - 10, 20,
                 StatCollector.translateToLocal("wildfire_gender.uv_editor.reset_defaults_all")));
 
@@ -69,7 +70,7 @@ public class GuiBreastUVEditor extends GuiScreen {
     private void setupSelectionButtons(int sidebarX) {
         int leftColX = sidebarX + 5;
         int btnW = (SIDEBAR_WIDTH - 15) / 2;
-        
+
         this.buttonList.add(new WildfireButton(1, leftColX, 40, btnW, 15, "Left Base"));
         this.buttonList.add(new WildfireButton(2, leftColX + btnW + 5, 40, btnW, 15, "Right Base"));
         this.buttonList.add(new WildfireButton(3, leftColX, 60, btnW, 15, "Left Overlay"));
@@ -86,14 +87,14 @@ public class GuiBreastUVEditor extends GuiScreen {
     }
 
     private void handleAdjustment(int id, UUID uuid) {
+        if (selectedUVs == null || selectedDirection == null) return;
         int row = (id - 100) / 2;
         boolean isAdd = (id % 2 != 0);
         UVQuad quad = selectedUVs.get(selectedDirection);
         if (quad == null) return;
 
         int delta = getIncrement() * (isAdd ? 1 : -1);
-        
-        // Boundaries Fix: Ensure we stay within 0-63
+
         if (row == 0) { // Move X
             int move = clamp(delta, -quad.x1(), 63 - quad.x2());
             quad = quad.addX1(move).addX2(move);
@@ -107,7 +108,11 @@ public class GuiBreastUVEditor extends GuiScreen {
         }
 
         selectedUVs.put(selectedDirection, quad);
-        UVStorage.saveLayout(uuid, selectedBreastIndex, selectedUVs);
+        try {
+            UVStorage.saveLayout(uuid, selectedBreastIndex, selectedUVs);
+        } catch (Throwable t) {
+            System.err.println("[WFG] Failed to save UV layout: " + t.getMessage());
+        }
     }
 
     private int clamp(int val, int min, int max) {
@@ -119,27 +124,35 @@ public class GuiBreastUVEditor extends GuiScreen {
         this.drawDefaultBackground();
         drawRect(this.width - SIDEBAR_WIDTH, 0, this.width, this.height, COLOR_SIDEBAR_BG);
 
-        // Texture Source
-        ResourceLocation tex = mc.thePlayer.getLocationSkin();
+        ResourceLocation tex = mc.thePlayer != null ? mc.thePlayer.getLocationSkin() : null;
         if (selectedBreastIndex.name().contains("OVERLAY")) {
-            ResourceLocation armor = ArmorTextureHelper.getArmorTextureForPlayerUUID(playerUuid);
-            if (armor != null) tex = armor;
+            try {
+                ResourceLocation armor = ArmorTextureHelper.getArmorTextureForPlayerUUID(playerUuid);
+                if (armor != null) tex = armor;
+            } catch (Throwable ignored) {}
         }
-        mc.getTextureManager().bindTexture(tex);
+        if (tex != null) mc.getTextureManager().bindTexture(tex);
         GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
         drawScaledCustomSizeModalRect(uvWindowX, uvWindowY, 0, 0, 64, 64, TEXTURE_DRAW_SIZE, TEXTURE_DRAW_SIZE, 64, 64);
 
-        // Grid/UV Boxes
-        for (Map.Entry<UVDirection, UVQuad> entry : selectedUVs.getAllSides().entrySet()) {
-            drawFaceBorderWithTooltip(entry.getKey(), entry.getValue(), mouseX, mouseY, selectedDirection != entry.getKey());
+        if (selectedUVs != null) {
+            for (Map.Entry<UVDirection, UVQuad> entry : selectedUVs.getAllSides().entrySet()) {
+                drawFaceBorderWithTooltip(entry.getKey(), entry.getValue(), mouseX, mouseY, selectedDirection != entry.getKey());
+            }
         }
 
-        // --- TRANSPARENCY FIX APPLIED HERE ---
         GlStateManager.pushMatrix();
         GlStateManager.enableDepth();
         GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
-        GlStateManager.disableBlend(); 
-        GuiInventory.drawEntityOnScreen(previewCenterX, previewCenterY, 120, (float)(previewCenterX - mouseX), (float)(previewCenterY - 50 - mouseY), mc.thePlayer);
+        // Preview of the player placed higher to correspond to torso
+        if (mc.thePlayer != null) {
+            try {
+                GuiInventory.drawEntityOnScreen(previewCenterX, previewCenterY, 120, (float)(previewCenterX - mouseX), (float)(previewCenterY - 50 - mouseY), mc.thePlayer);
+            } catch (Throwable t) {
+                // prevent GUI crash due to entity rendering issues
+                System.err.println("[WFG] Entity preview render failed: " + t.getMessage());
+            }
+        }
         GlStateManager.enableBlend();
         GlStateManager.popMatrix();
 
@@ -168,7 +181,7 @@ public class GuiBreastUVEditor extends GuiScreen {
     private void drawRightEditorPanel(int x, int mx, int my) {
         this.fontRendererObj.drawString("Type: " + selectedBreastIndex.name(), x, 25, COLOR_WHITE);
         if (selectedDirection == null) return;
-        
+
         this.fontRendererObj.drawString("Face: " + selectedDirection.name(), x, 80, COLOR_YELLOW);
         String[] labels = { "Move X", "Move Y", "Width", "Height" };
         for (int i = 0; i < 4; i++) {
@@ -192,6 +205,7 @@ public class GuiBreastUVEditor extends GuiScreen {
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int mouseButton) throws IOException {
         super.mouseClicked(mouseX, mouseY, mouseButton);
+        if (selectedUVs == null) return;
         for (Map.Entry<UVDirection, UVQuad> entry : selectedUVs.getAllSides().entrySet()) {
             UVQuad q = entry.getValue();
             int x1 = uvWindowX + (int)((q.x1() / 64f) * TEXTURE_DRAW_SIZE);
