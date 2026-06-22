@@ -1,5 +1,6 @@
 package com.wildfire.main;
 
+import com.wildfire.api.IGenderArmor;
 import com.wildfire.main.config.ClientConfig;
 import com.wildfire.main.config.GenderConfig;
 import com.wildfire.physics.BreastPhysics;
@@ -8,12 +9,15 @@ import com.wildfire.main.uvs.UVLayout;
 import com.wildfire.main.uvs.UVDirection;
 import com.wildfire.main.uvs.UVQuad;
 import com.wildfire.main.uvs.UVStorage;
+import com.wildfire.render.armor.EmptyGenderArmor;
+import com.wildfire.render.armor.SimpleGenderArmor;
 import net.minecraft.client.entity.AbstractClientPlayer;
 import net.minecraft.client.model.ModelBiped;
 import net.minecraft.client.model.ModelRenderer;
 import net.minecraft.client.renderer.GlStateManager;
 import net.minecraft.client.renderer.entity.RenderPlayer;
 import net.minecraft.client.renderer.entity.layers.LayerRenderer;
+import net.minecraft.init.Items;
 import net.minecraft.item.ItemArmor;
 import net.minecraft.item.ItemStack;
 import net.minecraft.util.MathHelper;
@@ -50,7 +54,7 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
                 }
             });
 
-    // Cache model renderers keyed by UV layout hash + inflate + texture size if needed later
+    // Cache model renderers keyed by UV layout hash + inflate
     private final ConcurrentHashMap<Integer, ModelRenderer> boxCache = new ConcurrentHashMap<>();
 
     public GenderLayer(RenderPlayer renderPlayer) {
@@ -89,7 +93,6 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         float zScale = 0.1f + (0.9f * sizeFactor);
         float torsoPush = (1.0f - sizeFactor) * 1.6f;
 
-        // Use tuned base separation to keep breasts centered for current model/UVs
         float separationBase = 0.75F + (cfg.breastsCleavage / 60.0F);
         float userXOffset = cfg.breastsOffsetX;
 
@@ -103,12 +106,36 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         GlStateManager.pushMatrix();
         model.bipedBody.postRender(renderScale);
         if (player.isSneaking()) {
-            // smaller translate so breasts remain on torso and not slide down
             GlStateManager.translate(0.0F, 0.12F, 0.0F);
         }
 
         GlStateManager.enableBlend();
         GlStateManager.enableAlpha();
+
+        // Prepare armor config (map ItemStack -> IGenderArmor same as in WildfireEventHandler)
+        ItemStack chest = null;
+        try {
+            chest = ((EntityPlayer) player).inventory.armorInventory[2];
+        } catch (Throwable ignored) {}
+
+        IGenderArmor armorCfg;
+        if (chest == null || chest.getItem() == null) {
+            armorCfg = EmptyGenderArmor.INSTANCE;
+        } else {
+            if (chest.getItem() == Items.leather_chestplate) {
+                armorCfg = SimpleGenderArmor.LEATHER;
+            } else if (chest.getItem() == Items.chainmail_chestplate) {
+                armorCfg = SimpleGenderArmor.CHAINMAIL;
+            } else if (chest.getItem() == Items.golden_chestplate) {
+                armorCfg = SimpleGenderArmor.GOLD;
+            } else if (chest.getItem() == Items.iron_chestplate) {
+                armorCfg = SimpleGenderArmor.IRON;
+            } else if (chest.getItem() == Items.diamond_chestplate) {
+                armorCfg = SimpleGenderArmor.DIAMOND;
+            } else {
+                armorCfg = SimpleGenderArmor.FALLBACK;
+            }
+        }
 
         // Pass user config values into physics update
         float bounceMultiplier = cfg.bounceMultiplier;
@@ -119,16 +146,12 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         boolean armorOverride = cfg.overrideArmorPhysics;
 
         if (phys != null) {
-            // Update physics per-breast taking uniboob into account
             if (cfg.breastsUniboob) {
-                phys[0].update(player, WildfireHelper.getArmor((EntityPlayer) player, 2) instanceof IGenderArmor ? (IGenderArmor)WildfireHelper.getArmor((EntityPlayer)player,2) : null,
-                        bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+                phys[0].update(player, armorCfg, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
                 phys[1].syncFrom(phys[0]);
             } else {
-                phys[0].update(player, WildfireHelper.getArmor((EntityPlayer) player, 2) instanceof IGenderArmor ? (IGenderArmor)WildfireHelper.getArmor((EntityPlayer)player,2) : null,
-                        bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
-                phys[1].update(player, WildfireHelper.getArmor((EntityPlayer) player, 2) instanceof IGenderArmor ? (IGenderArmor)WildfireHelper.getArmor((EntityPlayer)player,2) : null,
-                        bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+                phys[0].update(player, armorCfg, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+                phys[1].update(player, armorCfg, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
             }
         }
 
