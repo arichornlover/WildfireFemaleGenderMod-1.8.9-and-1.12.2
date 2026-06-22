@@ -79,6 +79,7 @@ public class WildfireEventHandler {
             }
         }
 
+        // If physics disabled -> reset and skip
         if (!settings.physicsEnabled) {
             phys[0].resetPhysics();
             if (!settings.breastsUniboob) phys[1].resetPhysics();
@@ -86,30 +87,28 @@ public class WildfireEventHandler {
         }
 
         boolean dualPhysics = !settings.breastsUniboob;
+
+        float bounceMultiplier = settings.bounceMultiplier;
+        float stiffness = settings.stiffness;
+        float damping = settings.damping;
+        float intensity = settings.intensity;
+        float momentum = settings.momentum / 100.0f;
+        boolean armorOverride = settings.overrideArmorPhysics;
+
         if (dualPhysics) {
-            phys[0].update((EntityLivingBase) player, armor);
-            phys[1].update((EntityLivingBase) player, armor);
+            phys[0].update(player, armor, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+            phys[1].update(player, armor, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
         } else {
-            phys[0].update((EntityLivingBase) player, armor);
+            phys[0].update(player, armor, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
             phys[1].syncFrom(phys[0]);
         }
     }
 
-    @SubscribeEvent
-    public void onLivingJump(LivingEvent.LivingJumpEvent event) {
-    }
-
-    @SubscribeEvent
-    public void onPlayerAttack(AttackEntityEvent event) {
-    }
-
-    @SubscribeEvent
-    public void onLivingHurt(LivingHurtEvent event) {
-    }
-
+    @SubscribeEvent public void onLivingJump(LivingEvent.LivingJumpEvent event) {}
+    @SubscribeEvent public void onPlayerAttack(AttackEntityEvent event) {}
+    @SubscribeEvent public void onLivingHurt(LivingHurtEvent event) {}
     @SubscribeEvent
     public void onPlayerLoggedOut(PlayerLoggedOutEvent event) {
-        // FIXED: Proper cleanup on logout
         if (event.player == Minecraft.getMinecraft().thePlayer) {
             if (event.player instanceof net.minecraft.client.entity.AbstractClientPlayer) {
                 net.minecraft.client.entity.AbstractClientPlayer acp = (net.minecraft.client.entity.AbstractClientPlayer) event.player;
