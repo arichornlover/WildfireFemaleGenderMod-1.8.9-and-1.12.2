@@ -48,6 +48,21 @@ public class BreastPhysics {
     }
 
     /**
+     * Backwards-compatible update overload used by older code paths that call update(entity, armor).
+     * This calls the full update with reasonable defaults so legacy callers compile and behave.
+     */
+    public void update(EntityLivingBase entity, IGenderArmor armor) {
+        // Defaults chosen to approximate previous behavior if callers didn't provide tuning:
+        float bounceMultiplier = 1.0f;
+        float stiffness = 0.1f;
+        float damping = 0.85f;
+        float intensity = 100.0f;
+        float momentum = 0.5f;
+        boolean armorOverride = false;
+        update(entity, armor, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
+    }
+
+    /**
      * Update the physics state.
      * @param entity the entity to base movement on
      * @param armor the armor config (can affect physics resistance)
@@ -55,7 +70,7 @@ public class BreastPhysics {
      * @param stiffness spring stiffness
      * @param damping damping factor
      * @param intensity overall intensity scalar
-     * @param momentum momentum influence scalar
+     * @param momentum momentum influence scalar (0..1+)
      * @param armorPhysicsOverride if true, armor physics override is enabled (ignore armor resistance)
      */
     public void update(EntityLivingBase entity, IGenderArmor armor,
