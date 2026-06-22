@@ -9,10 +9,7 @@ import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 import org.lwjgl.opengl.GL11;
 
 /**
- * Updated DynamicBreastBox:
- *  - Added robust UV validation and clamping to avoid UV-related crashes
- *  - Logs malformed UV cases instead of throwing
- *  - Keeps constants for TEX_W/TEX_H but defends against invalid quads
+ * DynamicBreastBox with robust UV validation.
  */
 public class DynamicBreastBox {
     private final float x;
@@ -67,7 +64,6 @@ public class DynamicBreastBox {
         float y2 = y + dy;
         float z2 = z + dz;
 
-        // EAST
         drawFaceSafe(wr, UVDirection.EAST,
                 x2, y1, z1,
                 x2, y2, z1,
@@ -75,7 +71,6 @@ public class DynamicBreastBox {
                 x2, y1, z2,
                 1f, 0f, 0f, renderScale);
 
-        // WEST
         drawFaceSafe(wr, UVDirection.WEST,
                 x1, y1, z2,
                 x1, y2, z2,
@@ -83,7 +78,6 @@ public class DynamicBreastBox {
                 x1, y1, z1,
                 -1f, 0f, 0f, renderScale);
 
-        // DOWN
         drawFaceSafe(wr, UVDirection.DOWN,
                 x1, y1, z1,
                 x2, y1, z1,
@@ -91,7 +85,6 @@ public class DynamicBreastBox {
                 x1, y1, z2,
                 0f, -1f, 0f, renderScale);
 
-        // UP
         drawFaceSafe(wr, UVDirection.UP,
                 x1, y2, z2,
                 x2, y2, z2,
@@ -99,7 +92,6 @@ public class DynamicBreastBox {
                 x1, y2, z1,
                 0f, 1f, 0f, renderScale);
 
-        // NORTH (front)
         drawFaceSafe(wr, UVDirection.NORTH,
                 x2, y1, z1,
                 x1, y1, z1,
@@ -110,9 +102,6 @@ public class DynamicBreastBox {
         tess.draw();
     }
 
-    /**
-     * Wrapper that validates UVQuad before delegating to drawFace.
-     */
     private void drawFaceSafe(WorldRenderer wr, UVDirection dir,
                               double vx0, double vy0, double vz0,
                               double vx1, double vy1, double vz1,
@@ -123,22 +112,18 @@ public class DynamicBreastBox {
         UVQuad quad = uvLayout.get(dir);
         if (quad == null) return;
 
-        // Validate proper min/max
         if (quad.x2() < quad.x1() || quad.y2() < quad.y1()) {
             System.err.println("[WFG] Skipping face for " + dir + ": inverted UV quad (" + quad.x1() + "," + quad.y1() + " -> " + quad.x2() + "," + quad.y2() + ")");
             return;
         }
 
-        // Ensure UVs in range [0, TEX_W-1] / [0, TEX_H-1]
         if (quad.x1() < 0 || quad.y1() < 0 || quad.x2() < 0 || quad.y2() < 0
                 || quad.x1() > TEX_W - 1 || quad.x2() > TEX_W - 1 || quad.y1() > TEX_H - 1 || quad.y2() > TEX_H - 1) {
             System.err.println("[WFG] Skipping face for " + dir + ": out-of-range UV quad (" + quad.x1() + "," + quad.y1() + " -> " + quad.x2() + "," + quad.y2() + ")");
             return;
         }
 
-        // If the quad is all zeros (possible default/malformed), skip
         if (quad.x1() == 0 && quad.y1() == 0 && quad.x2() == 0 && quad.y2() == 0) {
-            // harmless, skip drawing this face to avoid texture artifacts/crashes
             return;
         }
 
@@ -149,9 +134,6 @@ public class DynamicBreastBox {
         }
     }
 
-    /**
-     * Core face drawing. Assumes validation is already done.
-     */
     private void drawFace(WorldRenderer wr, UVDirection dir,
                           double vx0, double vy0, double vz0,
                           double vx1, double vy1, double vz1,
@@ -159,7 +141,6 @@ public class DynamicBreastBox {
                           double vx3, double vy3, double vz3,
                           float nx, float ny, float nz, float renderScale, UVQuad quad) {
 
-        // compute normalized u/v coordinates, include +1 pixel to match previous behavior
         double u1 = (double) quad.x1() / TEX_W;
         double v1 = (double) quad.y1() / TEX_H;
         double u2 = (double) (quad.x2() + 1) / TEX_W;
