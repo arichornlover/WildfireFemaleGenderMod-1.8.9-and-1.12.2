@@ -33,13 +33,19 @@ import com.google.common.cache.LoadingCache;
 import com.google.common.cache.RemovalListener;
 
 /**
- * GenderLayer: now feeding physics with player-configurable tuning and preserving all features.
+ * GenderLayer – Forge 1.8.9 render layer for breasts.
+ *
+ * - Calls BreastPhysics.update(entity, armor) using the restored API.
+ * - Binds generated breast overlay textures when rendering over armor so breasts visually overlap armor naturally.
+ * - Honors IGenderArmor.alwaysHidesBreasts and player hideInArmor settings.
+ * - Caches ModelRenderer boxes to avoid per-frame allocation.
  */
 public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
 
     private final RenderPlayer renderPlayer;
     private static final float MAX_PROTRUSION = 1.6f;
 
+    // Physics cache (per-player)
     private static final LoadingCache<UUID, BreastPhysics[]> PHYSICS_CACHE = CacheBuilder.newBuilder()
             .expireAfterAccess(5, TimeUnit.MINUTES)
             .removalListener((RemovalListener<UUID, BreastPhysics[]>) notification -> {
@@ -54,7 +60,7 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
                 }
             });
 
-    // Cache model renderers keyed by UV layout hash + inflate
+    // Cache ModelRenderer instances to avoid per-frame allocations.
     private final ConcurrentHashMap<Integer, ModelRenderer> boxCache = new ConcurrentHashMap<>();
 
     public GenderLayer(RenderPlayer renderPlayer) {
@@ -77,7 +83,9 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
                               float partialTicks, float ageInTicks, float headYaw, float headPitch, float scale) {
 
         if (player == null) return;
-        if (player.isInvisible()) return; // Respect invisibility
+
+        // Respect invisibility potion effect or setInvisible()
+        if (player.isInvisible()) return;
 
         if (!shouldRenderBreasts(player)) return;
 
@@ -93,6 +101,7 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         float zScale = 0.1f + (0.9f * sizeFactor);
         float torsoPush = (1.0f - sizeFactor) * 1.6f;
 
+        // Separation and offsets to keep breasts centered for the Fabric-derived UVs
         float separationBase = 0.75F + (cfg.breastsCleavage / 60.0F);
         float userXOffset = cfg.breastsOffsetX;
 
@@ -105,6 +114,8 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
 
         GlStateManager.pushMatrix();
         model.bipedBody.postRender(renderScale);
+
+        // reduced sneaking translation to keep breasts on torso
         if (player.isSneaking()) {
             GlStateManager.translate(0.0F, 0.12F, 0.0F);
         }
@@ -112,12 +123,9 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
         GlStateManager.enableBlend();
         GlStateManager.enableAlpha();
 
-        // Prepare armor config (map ItemStack -> IGenderArmor same as in WildfireEventHandler)
+        // Prepare armor config (map chest ItemStack -> IGenderArmor)
         ItemStack chest = null;
-        try {
-            chest = ((EntityPlayer) player).inventory.armorInventory[2];
-        } catch (Throwable ignored) {}
-
+        try { chest = ((EntityPlayer) player).inventory.armorInventory[2]; } catch (Throwable ignored) {}
         IGenderArmor armorCfg;
         if (chest == null || chest.getItem() == null) {
             armorCfg = EmptyGenderArmor.INSTANCE;
@@ -137,54 +145,80 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
             }
         }
 
-        // Pass user config values into physics update
-        float bounceMultiplier = cfg.bounceMultiplier;
-        float stiffness = cfg.stiffness;
-        float damping = cfg.damping;
-        float intensity = cfg.intensity;
-        float momentum = cfg.momentum / 100.0f; // normalize if stored as percentage
-        boolean armorOverride = cfg.overrideArmorPhysics;
-
+        // Update physics using the restored API
         if (phys != null) {
-            if (cfg.breastsUniboob) {
-                phys[0].update(player, armorCfg, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
-                phys[1].syncFrom(phys[0]);
-            } else {
-                phys[0].update(player, armorCfg, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
-                phys[1].update(player, armorCfg, bounceMultiplier, stiffness, damping, intensity, momentum, armorOverride);
-            }
+            // EntityConfig/WildfireEventHandler already handles uniboob/dual toggles for updates in tick
+            // but keep a safety update here for local-only config changes
+            phys[0].update(player, armorCfg);
+            phys[1].update(player, armorCfg);
         }
 
-        // LEFT side
-        float lPosX = 0, lPosY = 0, lBounce = 0;
+        // Render left + right (base + overlay)
+        // The overlay texture is a generated texture that contains only the breast artwork (from UVStorage).
+        // Rendering the overlay after armor will visually appear as breasts overlapping the chestplate.
+        // If overlay texture is missing, fall back to the player's skin.
+        float leftPosX = 0, leftPosY = 0, leftBounce = 0;
         if (phys != null) {
-            lPosX = interp(phys[0].getPrePositionX(), phys[0].getPositionX(), partialTicks);
-            lPosY = interp(phys[0].getPrePositionY(), phys[0].getPositionY(), partialTicks);
-            lBounce = interp(phys[0].getPreBounceRotation(), phys[0].getBounceRotation(), partialTicks);
+            leftPosX = interp(phys[0].getPrePositionX(), phys[0].getPositionX(), partialTicks);
+            leftPosY = interp(phys[0].getPrePositionY(), phys[0].getPositionY(), partialTicks);
+            leftBounce = interp(phys[0].getPreBounceRotation(), phys[0].getBounceRotation(), partialTicks);
         }
-        float leftX = (userXOffset - separationBase) - (lPosX * 0.34f);
-        float leftY = baseY + lPosY;
-        renderSide(player, entityCfg.getLeftBreastUVLayout(), leftX, leftY, baseZ, lBounce, renderScale, zScale, 0.0F);
-        renderSide(player, entityCfg.getLeftBreastOverlayUVLayout(), leftX, leftY, baseZ, lBounce, renderScale, zScale, 0.25F);
+        float leftX = (userXOffset - separationBase) - (leftPosX * 0.34f);
+        float leftY = baseY + leftPosY;
 
-        // RIGHT side
-        float rPosX = 0, rPosY = 0, rBounce = 0;
+        float rightPosX = 0, rightPosY = 0, rightBounce = 0;
         if (phys != null) {
-            rPosX = interp(phys[1].getPrePositionX(), phys[1].getPositionX(), partialTicks);
-            rPosY = interp(phys[1].getPrePositionY(), phys[1].getPositionY(), partialTicks);
-            rBounce = -interp(phys[1].getPreBounceRotation(), phys[1].getBounceRotation(), partialTicks);
+            rightPosX = interp(phys[1].getPrePositionX(), phys[1].getPositionX(), partialTicks);
+            rightPosY = interp(phys[1].getPrePositionY(), phys[1].getPositionY(), partialTicks);
+            rightBounce = -interp(phys[1].getPreBounceRotation(), phys[1].getBounceRotation(), partialTicks);
         }
-        float rightX = (userXOffset + separationBase) + (rPosX * 0.34f);
-        float rightY = baseY + rPosY;
-        renderSide(player, entityCfg.getRightBreastUVLayout(), rightX, rightY, baseZ, rBounce, renderScale, zScale, 0.0F);
-        renderSide(player, entityCfg.getRightBreastOverlayUVLayout(), rightX, rightY, baseZ, rBounce, renderScale, zScale, 0.25F);
+        float rightX = (userXOffset + separationBase) + (rightPosX * 0.34f);
+        float rightY = baseY + rightPosY;
+
+        // Decide whether to hide or to render overlay when armor is present
+        boolean armorCovers = armorCfg != null && armorCfg.coversBreasts();
+        boolean armorHidesAlways = armorCfg != null && armorCfg.alwaysHidesBreasts();
+        boolean playerHidesInArmor = (cfg.hideInArmor);
+
+        if (armorHidesAlways) {
+            // armor explicitly hides breasts -> nothing to render
+            GlStateManager.disableAlpha();
+            GlStateManager.disableBlend();
+            GlStateManager.popMatrix();
+            return;
+        }
+
+        // If armor covers breasts and player wants to hide in armor, skip; otherwise render with overlay
+        boolean shouldRenderInArmor = !armorCovers || (!playerHidesInArmor);
+
+        if (!shouldRenderInArmor) {
+            GlStateManager.disableAlpha();
+            GlStateManager.disableBlend();
+            GlStateManager.popMatrix();
+            return;
+        }
+
+        // Bind the overlay (generated) texture if available (this will draw breasts on top of armor visually)
+        ResourceLocation overlayTex = UVStorage.getBreastTexture(player.getUniqueID(), true);
+        ResourceLocation baseTex = UVStorage.getBreastTexture(player.getUniqueID(), false);
+        ResourceLocation fallback = player.getLocationSkin();
+
+        ResourceLocation bindTex = (overlayTex != null) ? overlayTex : (baseTex != null ? baseTex : fallback);
+
+        // If the player is not wearing armor, use base generated texture (or skin)
+        // If the player is wearing armor but we still render breasts, we use overlay generated texture so breasts overlap naturally.
+        renderSideWithTexture(player, entityCfg.getLeftBreastUVLayout(), leftX, leftY, baseZ, leftBounce, renderScale, zScale, 0.0F, bindTex);
+        renderSideWithTexture(player, entityCfg.getLeftBreastOverlayUVLayout(), leftX, leftY, baseZ, leftBounce, renderScale, zScale, 0.25F, bindTex);
+
+        renderSideWithTexture(player, entityCfg.getRightBreastUVLayout(), rightX, rightY, baseZ, rightBounce, renderScale, zScale, 0.0F, bindTex);
+        renderSideWithTexture(player, entityCfg.getRightBreastOverlayUVLayout(), rightX, rightY, baseZ, rightBounce, renderScale, zScale, 0.25F, bindTex);
 
         GlStateManager.disableAlpha();
         GlStateManager.disableBlend();
         GlStateManager.popMatrix();
     }
 
-    private void renderSide(AbstractClientPlayer player, UVLayout layout, float x, float y, float z, float bounce, float renderScale, float zScale, float inflate) {
+    private void renderSideWithTexture(AbstractClientPlayer player, UVLayout layout, float x, float y, float z, float bounce, float renderScale, float zScale, float inflate, ResourceLocation bindTex) {
         if (layout == null) return;
         UVQuad north = layout.get(UVDirection.NORTH);
         if (north == null) return;
@@ -197,21 +231,17 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
                 r.addBox(-2.0F, -2.5F, -2.0F, 4, 5, 4, inflate);
                 return r;
             } catch (Throwable t) {
-                System.err.println("[WFG] Failed create cached ModelRenderer: " + t.getMessage());
+                System.err.println("[WFG] Failed to create cached ModelRenderer for breast box: " + t.getMessage());
                 return null;
             }
         });
 
         if (box == null) return;
 
-        ResourceLocation armorTex = ArmorTextureHelper.getArmorTextureForPlayerUUID(player.getUniqueID());
-        boolean isWearingArmor = (armorTex != null && inflate > 0);
-
-        if (isWearingArmor) {
-            renderPlayer.bindTexture(armorTex);
+        if (bindTex != null) {
+            renderPlayer.bindTexture(bindTex);
         } else {
-            ResourceLocation tex = UVStorage.getBreastTexture(player.getUniqueID(), inflate > 0);
-            renderPlayer.bindTexture(tex != null ? tex : player.getLocationSkin());
+            renderPlayer.bindTexture(player.getLocationSkin());
         }
 
         GlStateManager.pushMatrix();
@@ -244,5 +274,7 @@ public class GenderLayer implements LayerRenderer<AbstractClientPlayer> {
     }
 
     @Override
-    public boolean shouldCombineTextures() { return false; }
+    public boolean shouldCombineTextures() {
+        return false;
+    }
 }
